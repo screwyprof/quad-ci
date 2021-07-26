@@ -22,8 +22,10 @@ data Step = Step
 data Build = Build
   { pipeline :: Pipeline,
     state :: BuildState,
-    completedSteps :: Map StepName StepResult
+    completedSteps :: Map StepName StepResult,
+    volume :: Docker.Volume
   }
+  deriving (Eq, Show)
 
 -- Add `Ord` so that it can be used as Map key
 newtype StepName = StepName Text
@@ -87,7 +89,8 @@ progress docker build =
           let options =
                 Docker.CreateContainerOptions
                   { image = step.image,
-                    script = script
+                    script = script,
+                    volume = build.volume
                   }
 
           container <- docker.createContainer options
