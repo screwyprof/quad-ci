@@ -7,11 +7,12 @@ import RIO
 import qualified RIO.Map as Map
 import qualified RIO.NonEmpty.Partial as NonEmpty.Partial
 import Test.Hspec
+import qualified System.Process.Typed as Process
 
 main :: IO ()
 main = hspec do
   docker <- runIO Docker.createService
-  describe "Quad CI" do
+  beforeAll cleanupDocker $ describe "Quad CI" do
     it "should run a build (success)" do
       testRunSuccess docker
 
@@ -20,6 +21,10 @@ testRunSuccess docker = do
   result <- runBuild docker testBuild
   result.state `shouldBe` BuildFinished BuildSucceeded
   Map.elems result.completedSteps `shouldBe` [StepSucceeded, StepSucceeded]
+
+cleanupDocker :: IO ()
+cleanupDocker = void do
+  Process.readProcessStdout "docker rm -f $(docker ps -aq --filter \"label=quad\")"
 
 runBuild :: Docker.Service -> Build -> IO Build
 runBuild docker build = do
