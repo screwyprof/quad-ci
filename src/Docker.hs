@@ -9,21 +9,29 @@ import qualified Socket
 
 data Service = Service
   { createContainer :: CreateContainerOptions -> IO ContainerId,
-    startContainer :: ContainerId -> IO ()
+    startContainer :: ContainerId -> IO (),
+    containerStatus :: ContainerId -> IO ContainerStatus
   }
 
-data CreateContainerOptions = CreateContainerOptions
-  { image :: Image
-  }
+createService :: IO Service
+createService = do
+  -- Init manager once
+  manager <- Socket.newManager "/var/run/docker.sock"
 
-newtype ContainerId = ContainerId Text
-  deriving (Eq, Show)
+  -- Make Request
+  let makeReq :: RequestBuilder
+      makeReq path =
+        HTTP.defaultRequest
+          & HTTP.setRequestManager manager
+          & HTTP.setRequestPath (encodeUtf8 $ "/v1.40" <> path)
+  pure
+    Service
+      { createContainer = createContainer_ makeReq,
+        startContainer = startContainer_ makeReq,
+        containerStatus = containerStatus_ makeReq
+      }
 
-containerIdToText :: ContainerId -> Text
-containerIdToText (ContainerId c) = c
-
-newtype Image = Image Text
-  deriving (Eq, Show)
+type RequestBuilder = Text -> HTTP.Request
 
 newtype ContainerExitCode = ContainerExitCode Int
   deriving (Eq, Show)
@@ -31,19 +39,31 @@ newtype ContainerExitCode = ContainerExitCode Int
 exitCodeToInt :: ContainerExitCode -> Int
 exitCodeToInt (ContainerExitCode code) = code
 
+newtype Image = Image Text
+  deriving (Eq, Show)
+
 imageToText :: Image -> Text
 imageToText (Image image) = image
 
-createService :: IO Service
-createService = do
-  pure
-    Service
-      { createContainer = createContainer_,
-        startContainer = startContainer_
-      }
+newtype ContainerId = ContainerId Text
+  deriving (Eq, Show)
 
-createContainer_ :: CreateContainerOptions -> IO ContainerId
-createContainer_ options = do
+containerIdToText :: ContainerId -> Text
+containerIdToText (ContainerId c) = c
+
+data ContainerStatus
+  = ContainerRunning
+  | ContainerExited ContainerExitCode
+  | ContainerOther Text
+  deriving (Eq, Show)
+
+data CreateContainerOptions = CreateContainerOptions
+  { image :: Image,
+    script :: Text
+  }
+
+createContainer_ :: RequestBuilder -> CreateContainerOptions -> IO ContainerId
+createContainer_ makeReq options = do
   let image = imageToText options.image
 
   let body =
@@ -51,15 +71,13 @@ createContainer_ options = do
           [ ("Image", Aeson.toJSON image),
             ("Tty", Aeson.toJSON True),
             ("Labels", Aeson.object [("quad", "")]),
-            ("Cmd", "echo hello"),
-            ("Entrypoint", Aeson.toJSON [Aeson.String "/bin/sh", "-c"])
+            ("Entrypoint", Aeson.toJSON [Aeson.String "/bin/sh", "-c"]),
+            ("Cmd", "echo \"$QUAD_SCRIPT\" | /bin/sh"),
+            ("Env", Aeson.toJSON ["QUAD_SCRIPT=" <> options.script])
           ]
 
-  manager <- Socket.newManager "/var/run/docker.sock"
   let req =
-        HTTP.defaultRequest
-          & HTTP.setRequestManager manager
-          & HTTP.setRequestPath "/v1.40/containers/create"
+        makeReq "/containers/create"
           & HTTP.setRequestMethod "POST"
           & HTTP.setRequestBodyJSON body
 
@@ -70,18 +88,33 @@ createContainer_ options = do
   res <- HTTP.httpBS req
   parseResponse res parser
 
-startContainer_ :: ContainerId -> IO ()
-startContainer_ container = do
-  manager <- Socket.newManager "/var/run/docker.sock"
-  let path = "/v1.40/containers/" <> containerIdToText container <> "/start"
-
+startContainer_ :: RequestBuilder -> ContainerId -> IO ()
+startContainer_ makeReq container = do
+  let path = "/containers/" <> containerIdToText container <> "/start"
   let req =
-        HTTP.defaultRequest
-          & HTTP.setRequestManager manager
-          & HTTP.setRequestPath (encodeUtf8 path)
+        makeReq path
           & HTTP.setRequestMethod "POST"
 
   void $ HTTP.httpBS req
+
+containerStatus_ :: RequestBuilder -> ContainerId -> IO ContainerStatus
+containerStatus_ makeReq container = do
+  let parser = Aeson.withObject "container-inspect" $ \o -> do
+        state <- o .: "State"
+        status <- state .: "Status"
+        case status of
+          "running" -> pure ContainerRunning
+          "exited" -> do
+            code <- state .: "ExitCode"
+            pure $ ContainerExited (ContainerExitCode code)
+          other -> pure $ ContainerOther other
+
+  let req =
+        makeReq $
+          "/containers/" <> containerIdToText container <> "/json"
+
+  res <- HTTP.httpBS req
+  parseResponse res parser
 
 parseResponse ::
   HTTP.Response ByteString ->
