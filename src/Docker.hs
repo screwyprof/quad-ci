@@ -3,6 +3,7 @@ module Docker where
 import Data.Aeson ((.:))
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Types as Aeson.Types
+import qualified Data.Time.Clock.POSIX as Time
 import qualified Network.HTTP.Simple as HTTP
 import RIO
 import qualified Socket
@@ -11,7 +12,9 @@ data Service = Service
   { createContainer :: CreateContainerOptions -> IO ContainerId,
     startContainer :: ContainerId -> IO (),
     containerStatus :: ContainerId -> IO ContainerStatus,
-    createVolume :: IO Volume
+    createVolume :: IO Volume,
+    fetchLogs :: FetchLogsOptions -> IO ByteString,
+    pullImage :: Image -> IO ()
   }
 
 createService :: IO Service
@@ -30,7 +33,9 @@ createService = do
       { createContainer = createContainer_ makeReq,
         startContainer = startContainer_ makeReq,
         containerStatus = containerStatus_ makeReq,
-        createVolume = createVolume_ makeReq
+        createVolume = createVolume_ makeReq,
+        fetchLogs = fetchLogs_ makeReq,
+        pullImage = pullImage_ makeReq
       }
 
 type RequestBuilder = Text -> HTTP.Request
@@ -41,11 +46,11 @@ newtype ContainerExitCode = ContainerExitCode Int
 exitCodeToInt :: ContainerExitCode -> Int
 exitCodeToInt (ContainerExitCode code) = code
 
-newtype Image = Image Text
+data Image = Image {name :: Text, tag :: Text}
   deriving (Eq, Show)
 
 imageToText :: Image -> Text
-imageToText (Image image) = image
+imageToText image = image.name <> ":" <> image.tag
 
 newtype ContainerId = ContainerId Text
   deriving (Eq, Show)
@@ -85,7 +90,7 @@ createContainer_ makeReq options = do
             ("Cmd", "echo \"$QUAD_SCRIPT\" | /bin/sh"),
             ("Env", Aeson.toJSON ["QUAD_SCRIPT=" <> options.script]),
             ("WorkingDir", "/app"),
-            ("HostConfig", Aeson.object [ ("Binds", Aeson.toJSON [bind])])
+            ("HostConfig", Aeson.object [("Binds", Aeson.toJSON [bind])])
           ]
 
   let req =
@@ -146,6 +151,37 @@ createVolume_ makeReq = do
 
   res <- HTTP.httpBS req
   parseResponse res parser
+
+data FetchLogsOptions = FetchLogsOptions
+  { container :: ContainerId,
+    since :: Time.POSIXTime,
+    until :: Time.POSIXTime
+  }
+
+fetchLogs_ :: RequestBuilder -> FetchLogsOptions -> IO ByteString
+fetchLogs_ makeReq options = do
+  let timestampToText t = tshow (round t :: Int)
+  let url =
+        "/containers/"
+          <> containerIdToText options.container
+          <> "/logs?stdout=true&stderr=true&since="
+          <> timestampToText options.since
+          <> "&until="
+          <> timestampToText options.until
+  res <- HTTP.httpBS $ makeReq url
+  pure $ HTTP.getResponseBody res
+
+pullImage_ :: RequestBuilder -> Image -> IO ()
+pullImage_ makeReq image = do
+  let url =
+        "/images/create?tag="
+          <> image.tag
+          <> "&fromImage="
+          <> image.name
+  let req =
+        makeReq url
+          & HTTP.setRequestMethod "POST"
+  void $ HTTP.httpBS req
 
 parseResponse ::
   HTTP.Response ByteString ->
