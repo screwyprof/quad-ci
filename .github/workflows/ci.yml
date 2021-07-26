@@ -1,0 +1,37 @@
+name: ci
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - "**.md"
+  pull_request:
+    types:
+      - opened
+      - synchronize
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: haskell/actions/setup@v1
+        with:
+          ghc-version: "8.10.4"
+          enable-stack: true
+          stack-version: "latest"
+      - uses: actions/cache@v2
+        name: Cache ~/.stack
+        with:
+          path: |
+            ~/.stack
+            ~/.local/bin/record-dot-preprocessor
+          key: ${{ runner.os }}-store-${{ hashFiles('stack.yaml.lock') }}-${{ hashFiles('package.yaml') }}
+      - name: Install record-dot-preprocessor
+        run: |
+          if [ ! -f ~/.local/bin/record-dot-preprocessor ]; then stack install record-dot-preprocessor; fi
+      - name: Build
+        run: stack build
+      - name: Test
+        run: stack test
