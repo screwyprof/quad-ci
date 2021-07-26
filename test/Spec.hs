@@ -1,8 +1,35 @@
 module Main where
+
 import Core
+import Docker
 import qualified Docker
 import RIO
+import qualified RIO.Map as Map
 import qualified RIO.NonEmpty.Partial as NonEmpty.Partial
+import Test.Hspec
+
+main :: IO ()
+main = hspec do
+  docker <- runIO Docker.createService
+  describe "Quad CI" do
+    it "should run a build (success)" do
+      testRunSuccess docker
+
+testRunSuccess :: Docker.Service -> IO ()
+testRunSuccess docker = do
+  result <- runBuild docker testBuild
+  result.state `shouldBe` BuildFinished BuildSucceeded
+  Map.elems result.completedSteps `shouldBe` [StepSucceeded, StepSucceeded]
+
+runBuild :: Docker.Service -> Build -> IO Build
+runBuild docker build = do
+  newBuild <- Core.progress docker build
+  case newBuild.state of
+    BuildFinished _ ->
+      pure newBuild
+    _ -> do
+      threadDelay (1 * 1000 * 1000)
+      runBuild docker newBuild
 
 -- Helper functions
 makeStep :: Text -> Text -> [Text] -> Step
@@ -32,6 +59,3 @@ testBuild =
       state = BuildReady,
       completedSteps = mempty
     }
-
-main :: IO ()
-main = pure ()
