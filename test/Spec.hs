@@ -1,6 +1,7 @@
 module Main where
 
 import Core
+import qualified Data.Yaml as Yaml
 import Docker
 import qualified Docker
 import RIO
@@ -28,6 +29,8 @@ main = hspec do
       testLogCollection runner
     it "should pull images" do
       testImagePull runner
+    it "should decode pipelines" do
+      testYamlDecoding runner
 
 testRunSuccess :: Runner.Service -> IO ()
 testRunSuccess runner = do
@@ -102,6 +105,13 @@ testImagePull runner = do
   result.state `shouldBe` BuildFinished BuildSucceeded
   Map.elems result.completedSteps `shouldBe` [StepSucceeded]
 
+testYamlDecoding :: Runner.Service -> IO ()
+testYamlDecoding runner = do
+  pipeline <- Yaml.decodeFileThrow "test/pipeline.sample.yml"
+  build <- runner.prepareBuild pipeline
+  result <- runner.runBuild emptyHooks build
+  result.state `shouldBe` BuildFinished BuildSucceeded
+
 cleanupDocker :: IO ()
 cleanupDocker = void do
   Process.readProcessStdout "docker rm -f $(docker ps -aq --filter \"label=quad\")"
@@ -113,7 +123,7 @@ makeStep :: Text -> Text -> [Text] -> Step
 makeStep name image commands =
   Step
     { name = StepName name,
-      image = Docker.Image { name = image, tag = "latest" },
+      image = Docker.Image {name = image, tag = "latest"},
       commands = NonEmpty.Partial.fromList commands
     }
 
